@@ -36,8 +36,10 @@ Every organization-owned collection includes `organizationId`, and every authent
 
 ## Demo path
 
-1. Click **Try the live demo** or **Explore demo workspace**.
-2. Start on Overview to see the recommendation engine, workload, priorities, deadlines, and progress.
+1. Click **Start the free demo**.
+2. Enter your own name, what you are using Orbit for, and what would make your week successful.
+3. Follow the guided tour as it walks through Overview, Planner, Roadmap, Focus mode, Courses, and Analytics.
+4. Start on Overview to see the recommendation engine, workload, priorities, deadlines, and progress.
 3. Use **Assignment planner** to search, filter, complete, and add work.
 4. Open **Weekly roadmap** to see the transparent rule-based plan.
 5. Start a session in **Focus mode**; the timer is functional and persists in the current session.
@@ -53,4 +55,4 @@ Every organization-owned collection includes `organizationId`, and every authent
 
 ## Deliberate limitations
 
-Authentication, invitations, payments, browser blocking, drag-and-drop calendar scheduling, and server-side tenant isolation are represented at the product/UI layer but need a backend integration (e.g. Postgres + an auth provider + Stripe) for production use. The demo makes those future seams explicit in Settings and the pricing surface.
+Authentication, invitations, payments, browser blocking, drag-and-drop calendar scheduling, and server-side tenant isolation are represented at the product/UI layer but need a backend integration (e.g. MongoDB + an auth provider) for production use. The browser demo intentionally starts clean, hides pricing, and uses a guided walkthrough so each person can personalize the experience.
