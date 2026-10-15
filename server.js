@@ -111,11 +111,18 @@ app.get('/api/me', requireAuth, asyncRoute(async (req, res) => {
   res.json({ user, organization, role: membership.role });
 }));
 
-app.get('/api/courses', requireAuth, asyncRoute(async (req, res) => res.json((await tenant(req, Course)).sort({ name: 1 }))));
+app.get('/api/courses', requireAuth, asyncRoute(async (req, res) => res.json(await tenant(req, Course).sort({ name: 1 }))));
 app.post('/api/courses', requireAuth, asyncRoute(async (req, res) => {
   const { name, code, teacher, color } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'name and code are required' });
   res.status(201).json(await Course.create({ organizationId: req.auth.organizationId, name, code, teacher, color }));
+}));
+app.delete('/api/courses/:id', requireAuth, asyncRoute(async (req, res) => {
+  if (!canManage(req.auth.role)) return res.status(403).json({ error: 'Only workspace admins can delete classes' });
+  const deleted = await Course.findOneAndDelete({ _id: req.params.id, organizationId: req.auth.organizationId });
+  if (!deleted) return res.status(404).json({ error: 'Class not found' });
+  await Assignment.deleteMany({ courseId: deleted._id, organizationId: req.auth.organizationId });
+  res.json({ ok: true, id: String(deleted._id) });
 }));
 
 app.get('/api/assignments', requireAuth, asyncRoute(async (req, res) => {
