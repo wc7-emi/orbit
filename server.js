@@ -124,6 +124,14 @@ app.delete('/api/courses/:id', requireAuth, asyncRoute(async (req, res) => {
   await Assignment.deleteMany({ courseId: deleted._id, organizationId: req.auth.organizationId });
   res.json({ ok: true, id: String(deleted._id) });
 }));
+app.patch('/api/courses/:id', requireAuth, asyncRoute(async (req, res) => {
+  if (!canManage(req.auth.role)) return res.status(403).json({ error: 'Only workspace admins can edit classes' });
+  const update = {};
+  for (const key of ['name', 'code', 'teacher', 'color']) if (req.body[key] !== undefined) update[key] = req.body[key];
+  const course = await Course.findOneAndUpdate({ _id: req.params.id, organizationId: req.auth.organizationId }, update, { new: true, runValidators: true });
+  if (!course) return res.status(404).json({ error: 'Class not found' });
+  res.json(course);
+}));
 
 app.get('/api/assignments', requireAuth, asyncRoute(async (req, res) => {
   const filter = { organizationId: req.auth.organizationId };
