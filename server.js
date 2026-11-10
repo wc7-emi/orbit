@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inflateSync } from 'node:zlib';
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
@@ -13,7 +14,20 @@ const PORT = process.env.PORT || 4173;
 const JWT_SECRET = process.env.JWT_SECRET || 'orbit-development-secret';
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN?.split(',') || true }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '15mb' }));
+
+function extractPdfText(base64){
+  const raw=Buffer.from(String(base64||'').replace(/^data:.*?base64,/,'').replace(/\s/g,''),'base64'),source=raw.toString('latin1'),streams=[];
+  for(const match of source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)){let chunk=Buffer.from(match[1],'latin1');try{chunk=inflateSync(chunk)}catch{}streams.push(chunk.toString('latin1'))}
+  const cmap=new Map(),toUnicode=streams.filter(text=>/beginbf(char|range)/.test(text)).join('\n');
+  for(const section of toUnicode.matchAll(/beginbfchar([\s\S]*?)endbfchar/gi))section[1].replace(/<([0-9a-f]+)>\s*<([0-9a-f]+)>/gi,(_,from,to)=>{cmap.set(from.toUpperCase(),parseInt(to,16));return _});
+  for(const section of toUnicode.matchAll(/beginbfrange([\s\S]*?)endbfrange/gi))section[1].replace(/<([0-9a-f]+)>\s*<([0-9a-f]+)>\s*<([0-9a-f]+)>/gi,(_,from,to,dest)=>{let start=parseInt(from,16),end=parseInt(to,16),value=parseInt(dest,16);for(;start<=end;start++,value++)cmap.set(start.toString(16).padStart(from.length,'0').toUpperCase(),value);return _});
+  const cmapWidth=cmap.size?Math.max(...[...cmap.keys()].map(key=>key.length)):0;
+  const mappedHex=value=>{const hex=value.replace(/\s/g,'').toUpperCase();if(!hex)return '';if(!cmap.size)return Buffer.from(hex.length%2?hex+'0':hex,'hex').toString('latin1');let output='';for(let i=0;i<hex.length;i+=cmapWidth){const code=hex.slice(i,i+cmapWidth).padEnd(cmapWidth,'0'),mapped=cmap.get(code);output+=mapped===undefined?String.fromCharCode(parseInt(code,16)):String.fromCodePoint(mapped)}return output};
+  const decodeLiteral=value=>{const clean=value.replace(/\\([\\()])/g,'$1').replace(/\\n/g,' ').replace(/\\r/g,' ').replace(/\\t/g,' ').replace(/\\([0-7]{1,3})/g,(_,oct)=>String.fromCharCode(parseInt(oct,8)));return cmap.size?mappedHex([...clean].map(char=>char.charCodeAt(0).toString(16).padStart(cmapWidth/2,'0')).join('')):clean};
+  const collectText=text=>{let found=[];text.replace(/\[((?:\\.|[^\]])*)\]\s*TJ/g,(_,value)=>{value.replace(/\(((?:\\.|[^\\)])*)\)|<([0-9a-f\s]+)>/gi,(_,literal,hex)=>{found.push(literal!==undefined?decodeLiteral(literal):mappedHex(hex));return _});return _});text.replace(/\(((?:\\.|[^\\)])*)\)\s*Tj/g,(_,value)=>{found.push(decodeLiteral(value));return _});text.replace(/<([0-9a-f\s]+)>\s*Tj/gi,(_,value)=>{found.push(mappedHex(value));return _});return found.join(' ')};
+  return streams.map(collectText).join(' ').replace(/\s+/g,' ').trim()||collectText(source).replace(/\s+/g,' ').trim();
+}
 
 const organizationSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
@@ -49,7 +63,7 @@ const assignmentSchema = new mongoose.Schema({
   dueAt: { type: Date, required: true, index: true }, estimatedMinutes: { type: Number, default: 60 },
   difficulty: { type: Number, min: 1, max: 5, default: 3 }, priority: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Medium' },
   status: { type: String, enum: ['todo', 'in_progress', 'done'], default: 'todo' }, progress: { type: Number, min: 0, max: 100, default: 0 },
-  notes: String, subtasks: [{ title: String, description: String, estimatedMinutes: Number, dueAt: Date, completed: { type: Boolean, default: false } }]
+  notes: String, color: { type: String, default: '#79a9ff' }, subtasks: [{ title: String, description: String, estimatedMinutes: Number, dueAt: Date, completed: { type: Boolean, default: false } }]
 }, { timestamps: true });
 
 const focusSessionSchema = new mongoose.Schema({
@@ -80,6 +94,14 @@ async function requireAuth(req, res, next) {
     next();
   } catch { res.status(401).json({ error: 'Invalid or expired token' }); }
 }
+
+app.post('/api/syllabus/extract', asyncRoute(async (req, res) => {
+  const data = String(req.body?.data || '');
+  if (!data) return res.status(400).json({ error: 'PDF data is required' });
+  const text = extractPdfText(data);
+  if (!text) return res.status(422).json({ error: 'Could not read text from this PDF. Try a text-based syllabus or paste its text below.' });
+  res.json({ text, source: 'local-pdf-extractor', aiReady: true });
+}));
 
 const tenant = (req, model) => model.find({ organizationId: req.auth.organizationId });
 const canManage = role => role === 'owner' || role === 'admin';
@@ -143,16 +165,20 @@ app.get('/api/assignments', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/assignments', requireAuth, asyncRoute(async (req, res) => {
-  const { title, courseId, dueAt, estimatedMinutes, difficulty, priority, type, notes, subtasks } = req.body;
+  const { title, courseId, dueAt, estimatedMinutes, difficulty, priority, type, color, notes, subtasks } = req.body;
   if (!title || !courseId || !dueAt) return res.status(400).json({ error: 'title, courseId, and dueAt are required' });
   const course = await Course.findOne({ _id: courseId, organizationId: req.auth.organizationId });
   if (!course) return res.status(400).json({ error: 'Course does not belong to this workspace' });
-  res.status(201).json(await Assignment.create({ organizationId: req.auth.organizationId, createdBy: req.auth.userId, title, courseId, dueAt, estimatedMinutes, difficulty, priority, type, notes, subtasks }));
+  res.status(201).json(await Assignment.create({ organizationId: req.auth.organizationId, createdBy: req.auth.userId, title, courseId, dueAt, estimatedMinutes, difficulty, priority, type, color, notes, subtasks }));
 }));
 
 app.patch('/api/assignments/:id', requireAuth, asyncRoute(async (req, res) => {
-  const allowed = ['title', 'dueAt', 'estimatedMinutes', 'difficulty', 'priority', 'status', 'progress', 'notes', 'subtasks'];
+  const allowed = ['title', 'courseId', 'dueAt', 'estimatedMinutes', 'difficulty', 'priority', 'color', 'status', 'progress', 'notes', 'subtasks'];
   const update = Object.fromEntries(Object.entries(req.body).filter(([key]) => allowed.includes(key)));
+  if (update.courseId) {
+    const course = await Course.findOne({ _id: update.courseId, organizationId: req.auth.organizationId });
+    if (!course) return res.status(400).json({ error: 'Course does not belong to this workspace' });
+  }
   const assignment = await Assignment.findOneAndUpdate({ _id: req.params.id, organizationId: req.auth.organizationId }, update, { new: true, runValidators: true }).populate('courseId', 'name code color');
   if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
   res.json(assignment);
@@ -163,6 +189,17 @@ app.delete('/api/assignments/:id', requireAuth, asyncRoute(async (req, res) => {
   const deleted = await Assignment.findOneAndDelete({ _id: req.params.id, organizationId: req.auth.organizationId });
   if (!deleted) return res.status(404).json({ error: 'Assignment not found' });
   res.status(204).end();
+}));
+
+app.delete('/api/workspace/data', requireAuth, asyncRoute(async (req, res) => {
+  if (!canManage(req.auth.role)) return res.status(403).json({ error: 'Only workspace admins can clear workspace data' });
+  const filter = { organizationId: req.auth.organizationId };
+  const [assignments, courses, focusSessions] = await Promise.all([
+    Assignment.deleteMany(filter),
+    Course.deleteMany(filter),
+    FocusSession.deleteMany(filter)
+  ]);
+  res.json({ ok: true, deleted: { assignments: assignments.deletedCount || 0, courses: courses.deletedCount || 0, focusSessions: focusSessions.deletedCount || 0 } });
 }));
 
 function recommendationScore(assignment) {
