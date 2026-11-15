@@ -133,6 +133,27 @@ app.get('/api/me', requireAuth, asyncRoute(async (req, res) => {
   res.json({ user, organization, role: membership.role });
 }));
 
+app.patch('/api/me', requireAuth, asyncRoute(async (req, res) => {
+  const update = {};
+  if (typeof req.body.name === 'string' && req.body.name.trim()) update.name = req.body.name.trim();
+  const requestedUsername = typeof req.body.username === 'string' ? req.body.username : req.body.email;
+  if (typeof requestedUsername === 'string' && requestedUsername.trim()) {
+    const email = requestedUsername.trim().toLowerCase();
+    const existing = await User.findOne({ email, _id: { $ne: req.auth.userId } });
+    if (existing) return res.status(409).json({ error: 'That username is already in use' });
+    update.email = email;
+  }
+  const user = await User.findByIdAndUpdate(req.auth.userId, update, { new: true, runValidators: true }).select('-passwordHash');
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  let organization;
+  if (typeof req.body.organizationName === 'string' && req.body.organizationName.trim()) {
+    organization = await Organization.findByIdAndUpdate(req.auth.organizationId, { name: req.body.organizationName.trim() }, { new: true, runValidators: true });
+  } else {
+    organization = await Organization.findById(req.auth.organizationId);
+  }
+  res.json({ user, organization });
+}));
+
 app.get('/api/courses', requireAuth, asyncRoute(async (req, res) => res.json(await tenant(req, Course).sort({ name: 1 }))));
 app.post('/api/courses', requireAuth, asyncRoute(async (req, res) => {
   const { name, code, teacher, color } = req.body;
